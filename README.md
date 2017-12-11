@@ -22,5 +22,6 @@ Here you can find:
 Processing of sequence and taxonomy table of all household fermentations (HF) and laboratory fermentation 1 & 2 (LF1 & LF2) using Phyloseq and ggplot2
 * **LF3**  
 Processing of sequence and taxonomy table of laboratory fermentation 3 (LF3) which compares the DNA-based versus the RNA-based 16S rRNA sequencing of the fermentation
-* **EPA**
+* **Phylogenetic placement**  
+All necessary scripts for running the phylogenetic placement of the ASVs on a 16S rRNA tree. A huge thank you to (Stijn Wittouck)[https://github.com/SWittouck] for conceptualising and performing this analysis
 
