@@ -1,0 +1,459 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: yes
+  html_notebook:
+    fig_height: 8
+    fig_width: 12
+
+---
+
+# Phyloseq
+
+## ggplot2 theme
+
+```{R}
+library(tidyverse)
+library(stringr)
+#### Theme for publication: http://areshenk-research-notes.com/publication-quality-plots-in-r/ ####
+
+theme_pub <- function (base_size = 12, base_family = "") {
+  theme_grey(base_size = base_size,
+             base_family = base_family) %+replace%
+
+    theme(# Set text size
+      plot.title = element_text(size = 18),
+      axis.title.x = element_text(size = 16),
+      axis.title.y = element_text(size = 16,
+                                  angle = 90),
+      axis.text.x = element_text(size = 14,colour="black",element_text(margin = margin(5,0,0,0),
+                                                                       angle = 90)),
+      axis.text.y = element_text(size = 14,colour="black",element_text(margin = margin(0,5,0,0))),
+      strip.text.y = element_text(size = 15,
+                                  angle = -90),
+
+      # Legend text
+      legend.title = element_text(size = 15),
+      legend.text = element_text(size = 15),
+      legend.background = element_rect(fill = "transparent", colour=NA),
+
+      # Configure lines and axes
+      axis.ticks.x = element_line(colour = "black"),
+      axis.ticks.y = element_line(colour = "black"),
+
+      # Plot background
+      panel.background = element_rect(fill = "transparent",colour=NA),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      plot.background = element_rect(fill="transparent", colour=NA),
+
+      # Facet labels       
+      legend.key = element_blank(),
+      strip.background = element_rect(fill = "transparent",
+                                      colour = NA,
+                                      size = 0.1),
+       panel.border = element_rect(colour = "black", fill="transparent"),
+       strip.text.x = element_text(size=18,face="bold",margin=margin(0,0,5,0))
+      )
+
+}
+
+# Create colour palette for taxonomy plotting
+
+colours <- c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99",
+             "#e31a1c","#fdbf6f","#ff7f00","#cab2d6","#6a3d9a",
+             "#ffff99","#b15928","#8BC395","#919D5F","#EB494A",
+             "#F79C5D","#DEB969")
+
+```
+
+Other useful function
+
+```{R}
+# Figure out highest unclassified rank of an OTU/DSV
+name_otus = function(ps) {
+  
+  otuName = as.character(tax_table(ps)[,"genus"])
+  otuName = str_split_fixed(otuName, "_", 2)[,1]
+  names(otuName) = taxa_names(ps)
+  
+  for (level in c("family", "order", "class", "phylum","kingdom")) {
+    uncl = (otuName=="")
+    if (!any(uncl)) break
+    otuName[uncl] = as.character(tax_table(ps)[uncl,level])
+    otuName[uncl] = str_split_fixed(otuName[uncl], "\\(", 2)[,1]
+  }
+  
+  otuName = sub("_[1-9]$", "", otuName) # remove appendices like "_1"
+  otuName = factor(otuName, unique(otuName))
+  otuName = otuName[order(otuName)]
+  
+  return(otuName)
+}
+
+# Create table for taxonomy plotting 
+taxplottable = function (ps) {
+  
+  # Add new column with highest unclassified taxonomic rank to ps object
+  highest_unclassified_rank <- name_otus(ps) %>%
+    data.frame(OTU=names(.), highest_unclassified_rank = .) %>%
+    mutate(highest_unclassified_rank = as.character(highest_unclassified_rank))
+  taxtable <- as.data.frame(tax_table(ps), stringsAsFactors=F) %>%
+    mutate(OTU=row.names(tax_table(ps))) %>%
+    left_join(highest_unclassified_rank) %>%
+    select(-OTU)
+  row.names(taxtable) <- row.names(tax_table(ps))
+  tax_table(ps) <- as.matrix(taxtable)
+  
+  # Figure out top12 genera
+  ps_genus <- tax_glom(ps, taxrank="highest_unclassified_rank") %>% # merge by highest_unclassified_rank
+  transform_sample_counts(.,  function(OTU) OTU/sum(OTU)) # calculate relabun
+  top12_otus <- names(sort(taxa_sums(ps_genus),TRUE)[1:12])
+  top12_genera <- as.character(tax_table(ps_genus)[top12_otus,"highest_unclassified_rank"]) # get names
+  
+  # Calculate relative abundance
+  ps_relabun <- transform_sample_counts(ps,  function(OTU) OTU/sum(OTU))
+
+  # Convert phyloseq object into large dataframe and manipulate
+  ps_relabun_df <- psmelt(ps_relabun) %>% 
+    group_by(OTU, Fermentation)  %>%
+    filter(max(Abundance) > 0.01) %>% # filter out low abundant OTUs
+    ungroup %>%
+    filter(highest_unclassified_rank %in% top12_genera) # keep only top 12 genera
+     
+
+  return(ps_relabun_df)
+}
+
+# Create distance matrix and reformat for easy plotting
+calculateDistMat <- function(phylo_obj){
+  # Calculate distance matrix
+  dm <- vegdist(otu_table(phylo_obj), method="bray")
+  
+  # Reformat the  to long format matrix
+  m <- data.frame(t(combn(rownames(otu_table(phylo_obj)),2)), as.numeric(dm))
+  names(m) <- c("sample1", "sample2", "distance")
+
+  # Add factor 'Day'
+  m$day_sample1 <- str_split_fixed(m$sample1,"_",4)[,2]
+  m$day_sample2 <- str_split_fixed(m$sample2,"_",4)[,2]
+  
+  # change Day 28 to 30
+  m$day_sample1 <- gsub("28","30",m$day_sample1)
+  m$day_sample2 <- gsub("28","30",m$day_sample2)
+
+  # Keep only samples from same day
+  m <- m[which(m$day_sample1== m$day_sample2),]
+  
+  return(m)
+}  
+```
+
+## Load in data
+
+```{R}
+library(phyloseq); packageVersion("phyloseq")
+load("../intermediate/ps.Robject")
+ps
+```
+
+## Create sample data from sample name and subset to CJ4 only
+
+```{R}
+# Make a data.frame holding the sample data
+sample_data <- sample_data(ps) %>%
+  mutate(rowNames = row.names(sample_data(ps)),
+         Fermentation = str_sub(description, 1, 3)) %>%
+  filter(Fermentation %in% c("CJ4")) %>%
+  mutate(Day = str_sub(description, 5, 6),
+         Repeat = str_sub(description, 7, 7),
+         Source = str_sub(description, 8, -1)) %>%
+  mutate(Source = str_replace(Source, "gDNA", "DNA")) %>%
+  mutate(Source = str_replace(Source, "cDNA", "RNA"))
+  
+# Subset phyloseq object
+row.names(sample_data) <- sample_data$rowNames
+ps <- phyloseq(otu_table(ps),
+               sample_data(sample_data),
+               tax_table(ps))
+ps
+```
+
+
+## Remove the bad samples
+
+```{R}
+ps <- prune_samples(sample_sums(ps) > 0,ps)
+ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+```
+
+
+# Abundance prior to chloroplast removal
+
+```{r}
+ps_melt <- psmelt(ps)
+prefilter_abun <- ps_melt %>%
+  group_by(Source, description) %>%
+  summarise(TotalCount = sum(Abundance)) %>%
+  mutate(Day = str_sub(description, 5,6), filter = "NO")
+prefilter_abun
+```
+
+## Remove Chloroplast and Mitochondria
+
+```{r}
+# non_bacterial
+taxtable <- as.data.frame(tax_table(ps)) 
+non_bacterial <- taxtable$kingdom!="Bacteria" | is.na(taxtable$kingdom)
+ps <- prune_taxa(!non_bacterial,ps)
+
+# Chloroplast and mitochondria
+taxtable <- as.data.frame(tax_table(ps)) 
+chloroplast_mitochondria <- taxtable$class=="Chloroplast" | taxtable$family=="Mitochondria"
+
+
+# Remove
+ps <- prune_taxa(!chloroplast_mitochondria,ps)
+
+ps
+```
+
+# Abundance after chloroplast removal
+
+```{r}
+ps_melt <- psmelt(ps)
+postfilter_abun <- ps_melt %>%
+  group_by(Source, description) %>%
+  summarise(TotalCount = sum(Abundance)) %>%
+  mutate(Day = str_sub(description, 5,6), filter = "YES")
+postfilter_abun
+```
+```{r}
+plot <- rbind(prefilter_abun, postfilter_abun) %>%
+  rename(Abundance = TotalCount) %>%
+  spread(key = filter, value= Abundance) %>%
+  mutate(diffAbundance = NO - YES) %>%
+  select(-NO) %>%
+  rename(Bacterial = YES, NonBacterial = diffAbundance) %>%
+  gather(key = "Origin", value = "Abundance", Bacterial, NonBacterial) %>%
+  mutate(Repeat = str_sub(description, 7, 7), 
+         Day = str_c("Day ", Day, sep = '')) %>%
+  ggplot(aes(x = Repeat, y = Abundance, fill = Origin)) +
+    geom_bar(stat = "identity", 
+             color = "black",
+             position = position_fill(reverse = T)) + 
+    ylab("Relative abundance (%) \n") + 
+    xlab("") +
+    theme_pub() +
+    labs(fill="") + 
+    facet_grid(Source ~ Day, drop=T) +
+    scale_fill_manual(values = colours) +
+    theme(axis.text.x= element_blank(), 
+          axis.ticks.x=element_blank(), 
+          legend.position="right",
+          strip.text.y = element_text(size = 15, face = "bold", margin = margin(0,0,0,4)))
+  
+plot
+
+ggsave("~/serverUA/sander/DADA2_WannesSander_170821/analysis/Nonbacterialreads.svg", plot = plot)
+saveRDS(plot, "~/serverUA/sander/DADA2_WannesSander_170821/analysis/Nonbacterialreads.rds")
+```
+
+## Plot Alpha div
+
+### Shannon
+
+```{R}
+title <- "Alpha Diversity \n"
+p <- plot_richness(ps, measures=c("Observed","Shannon"), x='Day')
+
+# Remove layer of points to plot over jitter points
+p$layers <- p$layers[-1]
+
+p + geom_point(size = 2, position= position_jitterdodge(),aes(colour=Source)) +
+  theme_pub() +
+  theme(legend.position= 'right',axis.text.x=element_text(margin=margin(5,0,0,0),angle=45,hjust=1, vjust=1)) +
+  ggtitle(title) +
+  ylab("Alpha diversity measure \n") +
+  xlab("\n Day") +
+  expand_limits(y=0)
+```
+
+## Calculate Relative Abundance
+
+```{R}
+ps_relabun <- transform_sample_counts(ps,  function(OTU) OTU/sum(OTU))
+```
+
+## Betadiv
+
+```{R}
+library(ggrepel)
+title <- "PCoA (Bray-Curtis distance) \n"
+ordination <- ordinate(ps_relabun,"PCoA","bray")
+p <- plot_ordination(ps_relabun, ordination, color="Source")
+p <- p + geom_point(size=3) + ggtitle(title) +
+  geom_text_repel(aes(label = Day))
+p
+```
+
+## Heatmap
+
+```{r }
+top50taxa <- prune_taxa(names(sort(taxa_sums(ps_relabun),TRUE)[1:50]), ps_relabun)
+plot_heatmap(top50taxa,title="OTU heatmap: Top 50 taxa","Genus") + theme(axis.text.y=element_blank()) +
+  facet_wrap(~Source, scales = 'free_x')
+```
+
+## Taxonomic plots
+
+```{r}
+# Calculate relative abundance and prepare data for plotting
+plottable <- taxplottable(ps)
+```
+
+```{r}
+# Plot using ggplot2
+ggplot(plottable, aes(x=Repeat, y=Abundance, fill=highest_unclassified_rank)) + geom_bar(stat = "identity", color = "black") + 
+  ylab("Percentage of Sequences \n") + 
+  xlab("") +
+  theme_pub() +
+  theme(axis.text.x= element_blank(), axis.ticks.x=element_blank(), legend.position="bottom") +
+  labs(fill="") + 
+  facet_grid(Source ~ Day,scales="free",drop=T) +
+  scale_fill_manual(values = colours) +
+  scale_y_continuous(expand=c(0,0)) + 
+  guides(fill=guide_legend(byrow=F,ncol=2)) 
+```
+
+One sample shows inconsistency with the rest of the samlpes (RNA, DAY 10). But we can still average everything out. 
+
+Let’s calculate their mean abundance per day per OTU per fermentation and start parsing the data for plotting.  
+
+```{r}
+# Caluclate mean abundance per OTU per Day per fermentation
+plottable_mean <- plottable %>%
+  group_by(OTU, Day, Source) %>%
+  summarise(meanAbundance= mean(Abundance))
+
+plottable_mean_metadata <- plottable %>%
+  select(-Repeat,-Sample, -Abundance, - rowNames, -description)%>%
+  left_join(plottable_mean) %>%
+  distinct() %>%
+  mutate(Day = as.numeric(as.character(Day)), meanAbundance = meanAbundance * 100)  # Change Day to numeric and multiply abundance by 100
+
+# Relevel highest_unclassified_rank to match colours of main genera with other plots
+common_taxa <- c("Leuconostoc", "Lactobacillus", "Lactococcus", "Enterobacteriaceae", "Citrobacter", "Klebsiella", "Pantoea", "Raoultella") 
+additional_taxa <- plottable_mean_metadata$highest_unclassified_rank %>%
+  unique() %>%
+  .[!. %in% common_taxa] %>%
+  as.character()
+
+Levels <- c(common_taxa,additional_taxa)
+
+plottable_mean_metadata$highest_unclassified_rank <- factor(plottable_mean_metadata$highest_unclassified_rank, levels=Levels)
+```
+
+```{r, fig.width=12, fig.height=8}
+plot <- ggplot(plottable_mean_metadata, aes(x=Day, y=meanAbundance, group=OTU)) + 
+  xlab("\n Day") +
+  ylab("Relative abundance\n") +
+  geom_area(aes(fill=highest_unclassified_rank, group=OTU),colour="white", size=0.2) + 
+  geom_vline(aes(xintercept=Day),colour='black', linetype='dotted', alpha= 0.8) +
+  theme_pub() + 
+  scale_fill_manual(values=colours[-4]) +
+  theme(legend.title=element_blank(), legend.text = element_text(face ="italic"),
+        panel.border = element_blank(),
+        axis.text.x= element_text(size=10, margin=margin(2,0,0,0)),
+        axis.text.y= element_text(size=10, margin=margin(0,0,0,2)),
+        legend.position="right") +
+  expand_limits(y=0,x=0) + 
+  scale_y_continuous(limits=c(0,100),breaks=c(0,50,100)) +
+  scale_x_continuous(breaks=c(0,10,20,30,40,50,60)) +
+  theme(plot.margin=unit(c(0,1,0,0),"cm")) + 
+  guides(fill=guide_legend(byrow = F,ncol=1)) + 
+  facet_wrap(~Source, nrow = 2)
+
+plot
+
+ggsave("~/serverUA/sander/DADA2_WannesSander_170821/analysis/Tax_comp.svg", last_plot())
+saveRDS(plot, "~/serverUA/sander/DADA2_WannesSander_170821/analysis/tax_comp.rds")
+
+```
+
+```{r, fig.width=12, fig.height=8}
+ggplot(plottable_mean_metadata, aes(x=Day, y=meanAbundance, group=OTU)) + 
+  xlab("\n Day") +
+  ylab("Relative abundance\n") +
+  geom_area(aes(fill=order, group=OTU),colour="white", size=0.2) + 
+  geom_vline(aes(xintercept=Day),colour='black', linetype='dotted', alpha= 0.8) +
+  theme_pub() + 
+  scale_fill_manual(values=c('#1b9e77','#d95f02','#7570b3','#e7298a','#66a61e','#e6ab02')) +
+  theme(legend.title=element_blank(), legend.text = element_text(face ="italic"),
+        panel.border = element_blank(),
+        axis.text.x= element_text(size=10, margin=margin(2,0,0,0)),
+        axis.text.y= element_text(size=10, margin=margin(0,0,0,2)),
+        legend.position="right") +
+  expand_limits(y=0,x=0) + 
+  scale_y_continuous(limits=c(0,100),breaks=c(0,50,100)) +
+  scale_x_continuous(breaks=c(0,10,20,30,40,50,60)) +
+  theme(plot.margin=unit(c(0,1,0,0),"cm")) + 
+  guides(fill=guide_legend(byrow = F,ncol=1)) + 
+  facet_wrap(~Source, nrow = 2)
+
+```
+
+```{r}
+lactos <- plottable %>%
+  filter(genus == "Lactobacillus") %>%
+  mutate(species_wrap = str_wrap(species),width = 55)
+  
+# Plot using ggplot2
+ggplot(lactos, aes(x=Repeat, y=Abundance, fill=species_wrap)) + geom_bar(stat = "identity", color = "black") + 
+  ylab("Percentage of Sequences \n") + 
+  xlab("") +
+  theme_pub() +
+  theme(axis.text.x= element_blank(), axis.ticks.x=element_blank(), legend.position="bottom",
+        legend.text = element_text(size = 9)) +
+  labs(fill="") + 
+  facet_grid(Source ~ Day,scales="free",drop=T) +
+  scale_fill_manual(values = colours) +
+  scale_y_continuous(expand=c(0,0)) + 
+  guides(fill=guide_legend(byrow=F,ncol=2)) 
+```
+
+# Some stats for paper
+
+```{r}
+plottable_mean_metadata %>%
+  filter(genus == "Lactobacillus") %>%
+  group_by(Source, Day) %>%
+  summarise(maxAbun = max(sum(meanAbundance)), numberASVs = n())
+
+```
+```{r}
+plottable_mean_metadata %>%
+  filter(genus == "Leuconostoc") %>%
+  group_by(Source, Day) %>%
+  summarise(maxAbun = max(sum(meanAbundance)), numberASVs = n())
+
+```
+
+```{r}
+plottable_mean_metadata %>%
+  filter(genus == "Lactococcus") %>%
+  group_by(Source, Day) %>% 
+  summarise(maxAbun = max(sum(meanAbundance)), numberASVs = n())
+
+```
+
+```{r}
+plottable_mean_metadata %>%
+  filter(family == "Enterobacteriaceae") %>%
+  group_by(Source, Day) %>% 
+  summarise(maxAbun = max(sum(meanAbundance)), numberASVs = n())
+
+```
