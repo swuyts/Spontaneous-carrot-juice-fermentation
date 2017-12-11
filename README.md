@@ -18,6 +18,9 @@ Sander Wuyts (1,2), Eline F.M. Oerlemans (1), Wannes Van Beeck (1), Stijn Wittou
 
 Here you can find:
 
-* Processing of sequence and taxonomy table of all household fermentations and laboratory fermentation 1 & 2
-* Processing of sequence and taxonomy table of laboratory fermentation 3
-* ...
+* **LF1_LF2_HF**
+Processing of sequence and taxonomy table of all household fermentations (HF) and laboratory fermentation 1 & 2 (LF1 & LF2) using Phyloseq and ggplot2
+* **LF3**
+Processing of sequence and taxonomy table of laboratory fermentation 3 (LF3) which compares the DNA-based versus the RNA-based 16S rRNA sequencing of the fermentation
+* **EPA**
+
