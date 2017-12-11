@@ -1,0 +1,868 @@
+---
+title: "Fermented Carrot Juice Analysis"
+author: "Sander Wuyts"
+date: "15 june 2017"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: yes
+---
+
+# Introduction
+
+Here we will analyse our data using the fine-scale resolution approach (DADA2).
+
+# Load necessary packages, functions and data
+
+## Packages
+
+```{r}
+R.version.string
+library("tidyverse")
+packageVersion("tidyverse")
+library("phyloseq")
+packageVersion("phyloseq")
+library("stringr")
+packageVersion("stringr")
+library("vegan")
+packageVersion("vegan")
+library(RColorBrewer)
+packageVersion("RColorBrewer")
+```
+
+Set random seed so other can reproduce
+
+```{r}
+set.seed(15062017)
+```
+
+## Functions and plot themes
+
+Custom function and themes for plotting
+
+```{r}
+theme_pub <- function (base_size = 12, base_family = "") {
+  theme_grey(base_size = base_size,
+             base_family = base_family) %+replace%
+
+    theme(# Set text size
+      plot.title = element_text(size = 18),
+      axis.title.x = element_text(size = 16),
+      axis.title.y = element_text(size = 16,
+                                  angle = 90),
+      axis.text.x = element_text(size = 14,colour="black",element_text(margin = margin(5,0,0,0),
+                                                                       angle = 90)),
+      axis.text.y = element_text(size = 14,colour="black",element_text(margin = margin(0,5,0,0))),
+      strip.text.y = element_text(size = 15,
+                                  angle = -90),
+
+      # Legend text
+      legend.title = element_text(size = 15),
+      legend.text = element_text(size = 15),
+      legend.background = element_rect(fill = "transparent", colour=NA),
+
+      # Configure lines and axes
+      axis.ticks.x = element_line(colour = "black"),
+      axis.ticks.y = element_line(colour = "black"),
+
+      # Plot background
+      panel.background = element_rect(fill = "transparent",colour=NA),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      plot.background = element_rect(fill="transparent", colour=NA),
+
+      # Facet labels       
+      legend.key = element_blank(),
+      strip.background = element_blank(),
+       panel.border = element_blank(),
+       strip.text.x = element_text(size=18,face="bold",margin=margin(0,0,5,0))
+      )
+
+}
+
+# Create colour palette for taxonomy plotting
+
+colours <- c("#a6cee3","#1f78b4","#b2df8a","#33a02c","#fb9a99",
+             "#e31a1c","#fdbf6f","#ff7f00","#cab2d6","#6a3d9a",
+             "#ffff99","#b15928","#8BC395","#919D5F","#EB494A",
+             "#F79C5D","#DEB969")
+
+# Figure out highest unclassified rank of an OTU/DSV
+name_otus = function(ps) {
+  
+  otuName = as.character(tax_table(ps)[,"Genus"])
+  otuName = str_split_fixed(otuName, "_", 2)[,1]
+  names(otuName) = taxa_names(ps)
+  
+  for (level in c("Family", "Order", "Class", "Phylum","Kingdom")) {
+    uncl = (otuName=="")
+    if (!any(uncl)) break
+    otuName[uncl] = as.character(tax_table(ps)[uncl,level])
+    otuName[uncl] = str_split_fixed(otuName[uncl], "\\(", 2)[,1]
+  }
+  
+  otuName = sub("_[1-9]$", "", otuName) # remove appendices like "_1"
+  otuName = factor(otuName, unique(otuName))
+  otuName = otuName[order(otuName)]
+  
+  return(otuName)
+}
+
+# Create table for taxonomy plotting 
+taxplottable = function (ps) {
+  
+  # Add new column with highest unclassified taxonomic rank to ps object
+  highest_unclassified_rank <- name_otus(ps) %>%
+    data.frame(OTU=names(.), highest_unclassified_rank = .) %>%
+    mutate(highest_unclassified_rank = as.character(highest_unclassified_rank))
+  taxtable <- as.data.frame(tax_table(ps), stringsAsFactors=F) %>%
+    mutate(OTU=row.names(tax_table(ps))) %>%
+    left_join(highest_unclassified_rank) %>%
+    select(-OTU)
+  row.names(taxtable) <- row.names(tax_table(ps))
+  tax_table(ps) <- as.matrix(taxtable)
+  
+  # Figure out top12 genera
+  ps_genus <- tax_glom(ps, taxrank="highest_unclassified_rank") %>% # merge by highest_unclassified_rank
+  transform_sample_counts(.,  function(OTU) OTU/sum(OTU)) # calculate relabun
+  top12_otus <- names(sort(taxa_sums(ps_genus),TRUE)[1:12])
+  top12_genera <- as.character(tax_table(ps_genus)[top12_otus,"highest_unclassified_rank"]) # get names
+  
+  # Calculate relative abundance
+  ps_relabun <- transform_sample_counts(ps,  function(OTU) OTU/sum(OTU))
+
+  # Convert phyloseq object into large dataframe and manipulate
+  ps_relabun_df <- psmelt(ps_relabun) %>% 
+    group_by(OTU, fermentation)  %>%
+    filter(max(Abundance) > 0.01) %>% # filter out low abundant OTUs
+    ungroup %>%
+    filter(highest_unclassified_rank %in% top12_genera) # keep only top 12 genera
+     
+
+  return(ps_relabun_df)
+}
+
+# Create distance matrix and reformat for easy plotting
+calculateDistMat <- function(phylo_obj){
+  # Calculate distance matrix
+  dm <- vegdist(otu_table(phylo_obj), method="bray")
+  
+  # Reformat the  to long format matrix
+  m <- data.frame(t(combn(rownames(otu_table(phylo_obj)),2)), as.numeric(dm))
+  names(m) <- c("sample1", "sample2", "distance")
+
+  # Add factor 'Day'
+  m$day_sample1 <- str_split_fixed(m$sample1,"_",4)[,2]
+  m$day_sample2 <- str_split_fixed(m$sample2,"_",4)[,2]
+  
+  # change Day 28 to 30
+  m$day_sample1 <- gsub("28","30",m$day_sample1)
+  m$day_sample2 <- gsub("28","30",m$day_sample2)
+
+  # Keep only samples from same day
+  m <- m[which(m$day_sample1== m$day_sample2),]
+  
+  return(m)
+}  
+```
+
+
+## Data
+
+The datasets are generated on our cluster with seperate scripts. Here we'll be importing the results into R/Phyloseq. 
+
+```{r}
+dada2 <- readRDS("../datasets/dada2.RDS")
+```
+
+We still have to remove all non-bacterial sequences here (e.g. Chloroplast, mitochondria). Let's remove these:
+
+```{r}
+# non_bacterial
+taxtable <- as.data.frame(tax_table(dada2)) 
+non_bacterial <- taxtable$Kingdom!="Bacteria" | is.na(taxtable$Kingdom)
+dada2 <- prune_taxa(!non_bacterial,dada2)
+# Chloroplast and mitochondria
+taxtable <- as.data.frame(tax_table(dada2)) 
+chloroplast_mitochondria <- taxtable$Class=="Chloroplast" | taxtable$Family=="Mitochondria"
+dada2 <- prune_taxa(!chloroplast_mitochondria,dada2)
+
+dada2 <- prune_samples(sample_sums(dada2)>0,dada2)
+```
+
+Merge technical repeats and restore metadata
+
+```{r}
+grouping_factor_dada2 = apply(sample_data(dada2)[,2:6], 1, paste0,collapse="_")
+
+psM = merge_samples(dada2, group=grouping_factor_dada2)
+psM.sample_data = str_split_fixed(rownames(sample_data(psM)), pattern="_", n=ncol(sample_data(psM))-1)
+rownames(psM.sample_data) = rownames(sample_data(psM))
+colnames(psM.sample_data) = colnames(sample_data(psM))[2:ncol(sample_data(psM))]
+psM.sample_data = data.frame(psM.sample_data)
+sample_data(psM) = sample_data(psM.sample_data)
+
+dada2 <- psM
+```
+Remove failed samples:
+
+```{r}
+dada2 <- prune_samples(sample_data(dada2)$type%in%c("CJ1","CJ2","FP"),dada2)
+# Remove failed D55 samples and failed CJ2 D00
+dada2  <- prune_samples(sample_data(dada2)$Day!=55,dada2)
+samplesD00_CJ2 <- sample_data(dada2)$type=="CJ2"&sample_data(dada2)$Day=="00"
+dada2  <- prune_samples(!samplesD00_CJ2,dada2)
+# Remove empty taxa
+dada2 <- prune_taxa(taxa_sums(dada2) > 0, dada2)
+```
+
+Some details:
+
+```{r}
+dada2
+```
+
+```{r}
+# Plot total reads per sample and read distribution
+readsumsdf = data.frame(nreads = sort(taxa_sums(dada2), TRUE), sorted = 1:ntaxa(dada2),
+                        type = "DSVs")
+readsumsdf = rbind(readsumsdf, data.frame(nreads = sort(sample_sums(dada2),TRUE), 
+                                          sorted = 1:nsamples(dada2), type = "Samples"))
+title = "Total number of reads"
+p = ggplot(readsumsdf, aes(x = sorted, y = nreads)) + geom_bar(stat = "identity")
+p + ggtitle(title) + scale_y_log10() + facet_wrap(~type, 1, scales = "free")
+```
+
+# Analysis
+
+## Alpha diversity
+
+```{r}
+richness_dada2<-  estimate_richness(dada2,measures=c('Observed','InvSimpson')) %>%
+  mutate(Samplename = row.names(.)) %>%
+  gather(.,key="DivType",value="Alphadiv", Observed, InvSimpson) %>%
+  mutate(type = str_split_fixed(Samplename,"_",8)[,1]) %>%
+  mutate(Day = as.integer(str_split_fixed(Samplename,"_",8)[,2])) %>%
+  mutate(fermentation = str_split_fixed(Samplename,"_",8)[,5]) %>%
+  mutate(DivType = factor(DivType,levels=c("Observed","InvSimpson"))) %>%
+  mutate(type = str_replace_all(type, "CJ1", "LF1"),
+         type = str_replace_all(type, "CJ2", "LF2"),
+         type = str_replace_all(type, "FP", "HF")) %>%
+  mutate(type = as_factor(type)) %>%
+  mutate(type = fct_relevel(type, "HF", after = Inf))
+```
+Plot:
+
+```{r}
+Colours <- c("#1b9e77","#d95f02","#7570b3")
+title <- "Alphadiversity \n"
+p <- ggplot(richness_dada2,aes(x=Day, y=Alphadiv))
+p + facet_wrap(~DivType,nrow=2, scales = "free_y") +
+  stat_summary(aes(group=fermentation, colour=type, alpha=type), fun.y=mean, geom="line") +
+  geom_point(data=richness_dada2[richness_dada2$type=="FP",],aes(colour=type), size=2,alpha=0.8) +
+  geom_point(data=richness_dada2[richness_dada2$type!="FP",], aes(colour=type), size=2,alpha=1) +
+  scale_color_manual(values=Colours) +
+  scale_alpha_manual(values = c(1,1,0.4)) + 
+  scale_x_continuous(limits = c(0,56),breaks=seq(0,60,10),expand=c(0.01,0)) +
+  theme_pub() + 
+  theme(legend.position= 'bottom', 
+        legend.title = element_blank(),
+        axis.text.x=element_text(margin=margin(5,0,0,0)),
+        panel.grid.major.y = element_line(colour = "grey")) +
+  ggtitle(title) +
+  ylab("Alpha diversity measure \n") +
+  xlab("\n Time (Days)") +
+  expand_limits(y=0)
+  
+ggsave(filename = "/mnt/H/Drafts/Sander/Fermentatie/Supplementary/SupFigure1.tiff",
+         width = 178,
+         height = 210,
+         units = "mm",
+         dpi = 300)
+```
+## Taxonomic composition
+
+```{r} 
+# select lab fermentations only
+dada2_labferm <- prune_samples(sample_data(dada2)$type=="CJ1"|sample_data(dada2)$type=="CJ2",dada2)
+
+# Remove empty taxa
+dada2_labferm <- prune_taxa(taxa_sums(dada2_labferm) > 0, dada2_labferm)
+
+# Calculate relative abundance and prepare data for plotting
+dada2_labferm_plot <- taxplottable(dada2_labferm)
+```
+
+  Plot lab fermentations first to see how similar biological repeats are.
+
+```{r, fig.width=12, fig.height=8}
+# Plot using ggplot2
+ggplot(dada2_labferm_plot, aes(x=Biol_repeat, y=Abundance, fill=highest_unclassified_rank)) + geom_bar(stat = "identity", color = "black") + 
+  ylab("Percentage of Sequences \n") + 
+  xlab("") +
+  theme_pub() +
+  theme(axis.text.x= element_blank(), axis.ticks.x=element_blank(), legend.position="bottom") +
+  labs(fill="") + 
+  facet_grid(fermentation~Day,scales="free",drop=T) +
+  scale_fill_manual(values = colours) +
+  scale_y_continuous(expand=c(0,0)) + 
+  guides(fill=guide_legend(byrow=F,ncol=2)) 
+```
+
+The biological repeats look very similar. Let's calculate their mean abundance per day per OTU per fermentation and start parsing the data for plotting.
+
+```{r}
+# Calculate relative abundance and prepare data for plotting
+dada2_plot <- taxplottable(dada2)
+
+# Caluclate mean abundance per OTU per Day per fermentation
+dada2_plot_mean <- dada2_plot %>%
+  group_by(OTU, Day, fermentation) %>%
+  summarise(meanAbundance= mean(Abundance))
+
+# Refine the data for plotting
+dada2_plot_mean_metadata <- dada2_plot %>%
+  select(-Biol_repeat,-Sample, -Abundance) %>% 
+  left_join(dada2_plot_mean) %>% # Add other metadata again
+  distinct() %>%
+  mutate(Day = as.numeric(as.character(Day)), meanAbundance = meanAbundance * 100)  # Change Day to numeric and multiply abundance by 100
+
+# Relevel highest_unclassified_rank to match colours of main genera with other plots
+common_taxa <- c("Leuconostoc", "Lactobacillus", "Lactococcus", "Weissella", "Enterobacteriaceae", "Pectobacterium", "Pseudomonas") 
+additional_taxa <- dada2_plot_mean_metadata$highest_unclassified_rank %>%
+  unique() %>%
+  .[!. %in% common_taxa] %>%
+  as.character()
+
+Levels <- c(common_taxa,additional_taxa)
+
+dada2_plot_mean_metadata$highest_unclassified_rank <- factor(dada2_plot_mean_metadata$highest_unclassified_rank, levels=Levels)
+
+# Relevel so that same highest_unclassified_rank will be plotted together
+order <- dada2_plot_mean_metadata[order(dada2_plot_mean_metadata$highest_unclassified_rank),] %>%
+  pull(OTU) %>%
+  unique()
+
+dada2_plot_mean_metadata <- dada2_plot_mean_metadata %>%
+  mutate(OTU_reorder = factor(OTU, levels = order))
+```
+
+Three fermentations did not show a complete sample collection. Let's remove their other time points from the plot as well.
+
+```{r}
+dada2_plot_mean_metadata <- dada2_plot_mean_metadata %>%
+  filter(fermentation != "FP05", fermentation != "FP12", fermentation != "FP37")
+```
+
+As a final manipulation, we will be clustering our data according to their similarity on day 30. This will reorder the plot so that fermentations that have a similar outcome on D30 will be next to each other in the plot.
+
+```{r}
+clust <- otu_table(dada2) %>%
+  vegdist(.,meterhod = "bray") %>% # Calculate Bray-Curtis distance matrix
+  hclust(method = "average") # Perform hierarchical clustering
+  
+clustOrder <- clust$labels[clust$order] 
+# Select Day30 only
+clustOrder <- clustOrder[which(str_split_fixed(clustOrder,"_",5)[,2] %in% c(30,28))]
+
+# Abbreaviate sample name
+clustOrder <- unique(str_split_fixed(clustOrder,"_",5)[,5])
+
+# Relevel fermentation factor in dataset to follow the clustering order
+dada2_plot_mean_metadata$fermentation <- factor(dada2_plot_mean_metadata$fermentation, level = clustOrder)
+
+```
+
+  As a last thing we'll change the name of the facet_grid headers to be more in line with the publication
+
+```{r}
+altNamelabelsdf <- dada2_plot_mean_metadata %>%
+  select(fermentation) %>%
+  distinct %>%
+  mutate(altName = gsub("FP","HF",fermentation)) %>%
+  mutate(altName = gsub("CJ","LF", altName)) 
+
+altNamelabels <- altNamelabelsdf$altName
+names(altNamelabels) <- altNamelabelsdf$fermentation
+```
+
+
+Now let's plot again!
+
+```{r, fig.width=12, fig.height=15}
+dada2_plot_mean_metadata %>%
+  ggplot(aes(x=Day, y=meanAbundance, group=OTU)) +
+  xlab("Time (days)") +
+  ylab("Relative abundance (%)") +
+  geom_area(aes(fill=highest_unclassified_rank, group=OTU),colour="white", size=0.05) + 
+  geom_vline(aes(xintercept=Day),colour='black', linetype='dotted', alpha= 0.7) +
+  theme_pub() + 
+  scale_fill_manual(values=colours) +
+  expand_limits(y=0,x=0) + 
+  scale_y_continuous(limits=c(0,100),breaks=c(0,50,100)) +
+  scale_x_continuous(breaks=c(0,10,20,30,40,50)) +
+  theme(strip.text.x = element_text(size=8,face="bold",margin=margin(0,0,1,0)),
+        legend.position = "bottom",
+        legend.text = element_text(size = 8, face = "italic"),
+        legend.title=element_blank(), 
+        panel.border = element_blank(),
+        axis.text.x= element_text(size=7, margin=margin(2,0,0,0)),
+        axis.text.y= element_text(size=7, margin=margin(0,0,0,2)),
+        axis.title.x= element_text(size=12, margin = margin(2,0,0,0, "mm")),
+        axis.title.y= element_text(size=12, margin = margin(0,2,0,0, "mm")),
+        legend.margin = margin(0,0,0,0, "mm")) + 
+  guides(fill=guide_legend(byrow = F,ncol=4)) +
+  facet_wrap(~fermentation, ncol=5, scales = "free_x", labeller = labeller(fermentation = altNamelabels))
+
+ggsave(filename = "/mnt/H/Drafts/Sander/Fermentatie/Paperpictures/Figure2.tiff",
+         width = 178,
+         height = 210,
+         units = "mm",
+         dpi = 300)
+```
+
+  Let's plot this again but coloured on genus level
+  
+```{r, fig.width=12, fig.height=15}
+ggplot(dada2_plot_mean_metadata,aes(x=Day, y=meanAbundance, group=OTU)) + 
+  xlab("\n Day") +
+  ylab("Relative abundance\n") +
+  geom_area(aes(fill=Order, group=OTU),colour="white", size=0.2) + 
+  geom_vline(aes(xintercept=Day),colour='black', linetype='dotted', alpha= 0.8) +
+  theme_pub() + 
+  scale_fill_manual(values=c('#1b9e77','#d95f02','#7570b3','#e7298a','#66a61e','#e6ab02')) +
+  theme(legend.title=element_blank(), legend.text = element_text(face ="italic"),
+        panel.border = element_blank(),
+        axis.text.x= element_text(size=8, margin=margin(2,0,0,0)),
+        axis.text.y= element_text(size=8, margin=margin(0,0,0,2)),
+        legend.position="right") +
+  expand_limits(y=0,x=0) + 
+  scale_y_continuous(limits=c(0,100),breaks=c(0,50,100)) +
+  scale_x_continuous(breaks=c(0,10,20,30,40,50)) +
+  theme(plot.margin=unit(c(0,1,0,0),"cm")) + 
+  guides(fill=guide_legend(byrow = F,ncol=1)) +
+  facet_wrap(~fermentation, ncol=5, scales = "free_x", labeller = labeller(fermentation = altNamelabels))
+```
+
+### Digging deeper in the ASVs
+
+First let's give every ASV an unique name.
+
+```{r}
+# Code originated from Stijn Wittouck
+# Rename taxa names
+uniquename <- dada2_plot_mean_metadata %>% 
+  select(OTU, highest_unclassified_rank) %>%
+  distinct() %>% 
+  group_by(highest_unclassified_rank) %>%
+  mutate(n_taxa = n()) %>%
+  mutate(taxon_number = ifelse(n_taxa > 1, as.character(1:n()), "")) %>%
+  mutate(taxon_name = paste(highest_unclassified_rank, taxon_number, sep = " ")) %>%
+  ungroup() %>%
+  select(- highest_unclassified_rank, - n_taxa, - taxon_number)
+
+# Merge df's and filter for only most abundant
+dada2_plot_mean_metadata <- dada2_plot_mean_metadata %>%
+  left_join(uniquename) 
+
+# Save file for phylogenetic placement for Stijn
+dada2_plot_mean_metadata %>%
+  select(OTU, Family, Genus, taxon_name) %>%
+  distinct %>% 
+  filter(Family %in% c('Lactobacillaceae', 'Leuconostocaceae')) %>%
+  write_tsv("ASVs_CJ.tsv")
+
+```
+
+#### Lactobacillus
+
+```{r, fig.width=12, fig.height=15}
+# Lactobacillsus
+dada2_plot_mean_metadata_Lactobacillus <- dada2_plot_mean_metadata %>%
+  filter(Genus == "Lactobacillus")
+
+colourCount = length(unique(dada2_plot_mean_metadata_Lactobacillus$OTU))
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+
+ggplot(dada2_plot_mean_metadata_Lactobacillus, aes(x=Day, y=meanAbundance, group=OTU)) + 
+  xlab("Time (days)") +
+  ylab("Relative abundance (%)") +
+  geom_area(aes(fill=taxon_name, group=OTU),colour="white", size=0.05) + 
+  geom_vline(aes(xintercept=Day),colour='black', linetype='dotted', alpha= 0.7) +
+  theme_pub() + 
+  scale_fill_manual(values = getPalette(colourCount)) +
+  expand_limits(y=0,x=0) + 
+  scale_x_continuous(breaks=c(0,10,20,30,40,50)) +
+  theme(strip.text.x = element_text(size=8,face="bold",margin=margin(0,0,1,0)),
+        legend.position = "bottom",
+        legend.text = element_text(size = 8, face = "italic"),
+        legend.title=element_blank(), 
+        panel.border = element_blank(),
+        axis.text.x= element_text(size=7, margin=margin(2,0,0,0)),
+        axis.text.y= element_text(size=7, margin=margin(0,0,0,2)),
+        axis.title.x= element_text(size=12, margin = margin(2,0,0,0, "mm")),
+        axis.title.y= element_text(size=12, margin = margin(0,2,0,0, "mm")),
+        legend.margin = margin(0,0,0,0, "mm")) + 
+  guides(fill=guide_legend(byrow = F,ncol=4)) +
+  facet_wrap(~fermentation, ncol=5, scales = "free_x", labeller = labeller(fermentation = altNamelabels))
+
+ggsave(filename = "/mnt/H/Drafts/Sander/Fermentatie/Supplementary/SupFigure3.tiff",
+         width = 178,
+         height = 210,
+         units = "mm",
+         dpi = 300)
+```
+
+#### Leuconostoc
+
+
+```{r, fig.width=12, fig.height=15}
+# Leuconostoc
+dada2_plot_mean_metadata_Leuconostoc <- dada2_plot_mean_metadata %>%
+  filter(Genus == "Leuconostoc")
+
+colourCount = length(unique(dada2_plot_mean_metadata_Leuconostoc$OTU))
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+
+ggplot(dada2_plot_mean_metadata_Leuconostoc, aes(x=Day, y=meanAbundance, group=OTU)) + 
+  xlab("Time (days)") +
+  ylab("Relative abundance (%)") +
+  geom_area(aes(fill=taxon_name, group=OTU),colour="white", size=0.05) + 
+  geom_vline(aes(xintercept=Day),colour='black', linetype='dotted', alpha= 0.7) +
+  theme_pub() + 
+  scale_fill_manual(values = getPalette(colourCount)) +
+  expand_limits(y=0,x=0) + 
+  scale_x_continuous(breaks=c(0,10,20,30,40,50)) +
+  theme(strip.text.x = element_text(size=8,face="bold",margin=margin(0,0,1,0)),
+        legend.position = "bottom",
+        legend.text = element_text(size = 8, face = "italic"),
+        legend.title=element_blank(), 
+        panel.border = element_blank(),
+        axis.text.x= element_text(size=7, margin=margin(2,0,0,0)),
+        axis.text.y= element_text(size=7, margin=margin(0,0,0,2)),
+        axis.title.x= element_text(size=12, margin = margin(2,0,0,0, "mm")),
+        axis.title.y= element_text(size=12, margin = margin(0,2,0,0, "mm")),
+        legend.margin = margin(0,0,0,0, "mm")) + 
+  guides(fill=guide_legend(byrow = F,ncol=4)) +
+  facet_wrap(~fermentation, ncol=5, scales = "free_x", labeller = labeller(fermentation = altNamelabels))
+
+ggsave(filename = "/mnt/H/Drafts/Sander/Fermentatie/Supplementary/SupFigure2.tiff",
+         width = 178,
+         height = 210,
+         units = "mm",
+         dpi = 300)
+```
+
+### Correlation between ASVs
+
+Let's see which ASVs are correlated. Meaning which ASVs can be found in the same fermentation. The might come from the same organism containing multiple 16S copies.
+
+```{r, fig.width=8, fig.height=8}
+dada2_otu <- as.data.frame(otu_table(dada2))
+dada2_otu$samples <- row.names(dada2_otu)
+
+# Data clean up
+dada2_otu <- dada2_otu %>% 
+  filter(!str_detect(samples,"FP05"),  # filter incomplete fermentations 
+         !str_detect(samples,"FP12"),
+         !str_detect(samples,"FP37"))  %>%
+  mutate(fermentation = str_extract(samples, "[^_]+$")) %>% # Extract metadata
+  mutate(Day = as.integer(ifelse(fermentation %in% c("CJ1", "CJ2"), str_sub(samples, 5,6), str_sub(samples,4,5)))) %>% 
+  filter(Day %in% c(1, 3, 30, 28)) %>% # filter to keep day 1, 3 and 30
+  gather(key = "ASV" , value = "abundance", -samples, -fermentation, -Day) %>%
+  group_by(fermentation, ASV) %>%
+  summarise(abundance = sum(abundance)) %>% # sum all ASVs belonging to same fermentation
+  rename(OTU = ASV) %>% # Add unqiue taxon name
+  left_join(dada2_plot_mean_metadata[,c("OTU", "taxon_name")]) %>% # This step also filters on top12 most abundant genera
+  distinct() %>%
+  filter(!is.na(taxon_name)) %>%
+  select(-OTU) %>%
+  spread(fermentation, abundance) %>% # remove empty rows
+  mutate(sumVar = rowSums(.[2:length(colnames(.))])) %>%
+  filter(sumVar > 0) %>%
+  select(-sumVar)
+
+# Convert to presense absence
+dada2_otu <- as.data.frame(dada2_otu)
+row.names(dada2_otu) <- dada2_otu$taxon_name
+dada2_otu <- dada2_otu[,-1]
+dada2_otu[dada2_otu > 0] <- 1
+dada2_otu <- t(dada2_otu)
+
+# Filter out de ASVs present in every fermentation
+dada2_otu <- dada2_otu[,!colSums(dada2_otu) == length(rownames(dada2_otu))]
+
+# Calculate correlation matrix, make tidy, plot
+corr <- as.data.frame(cor(dada2_otu))
+corr$ASV1 <- row.names(corr)
+corr %>% 
+  gather(key = "ASV2", value = "corr", -ASV1) %>%
+  filter(!is.na(corr)) %>%
+  ggplot(aes(x= ASV1, y = ASV2)) + 
+  geom_raster(aes(fill = corr)) +
+  scale_fill_gradient(low="grey90", high="red") + 
+  scale_y_discrete(position = "right") +
+  theme(axis.text.x = element_text(size = 8 , angle = 90, hjust = 1, vjust= 0.5, face = "italic"),
+        axis.text.y = element_text(size = 8 , hjust = 1, vjust= 0.5, face = "italic"),
+        legend.position = "bottom",
+        legend.title = element_blank(),
+        axis.title = element_blank())
+```
+
+Lactobacillus 8, 9 and Lactobacillus 11 seems to bee highly correlated. Read: they are found together in all fermentations possibly indication 16S sequencing variants of one single strain. However, they are only found in one single fermentation. Hence, the high correlation. This is not the case for Enterobacteriaceae 2 and Pectobacterium. They are found in multiple fermentations!
+
+
+## Some numbers and percentages for paper
+
+We want to know the percentage of samples that have certain genera.
+
+### Function for calculating the stats
+
+```{r}
+calculate_statistics = function(dataframe, genus) {
+  
+  dataframe %>%
+  filter(highest_unclassified_rank == genus) %>%
+  group_by(fermentation) %>%
+  summarise(maxAb = max(meanAbundance)) %>%
+  filter(maxAb > 0) %>%
+  summarise(highest_unclassified_rank = genus, Percentage = n()/40*100, MaxAbundance = max(maxAb))
+  
+}
+```
+
+  Generate stats
+
+```{r}
+stats=NULL
+for (genus in unique(dada2_plot_mean_metadata$highest_unclassified_rank)){
+  object <- calculate_statistics(dada2_plot_mean_metadata,genus)
+  stats <- rbind(stats,object)
+}
+
+stats
+```
+
+### Count per ASV
+
+```{r}
+lactobacillus_dada2 <- dada2_plot_mean_metadata %>%
+  filter(Genus == "Lactobacillus") %>%
+  select(OTU, taxon_name, fermentation, meanAbundance) %>%
+  group_by(taxon_name, fermentation) %>%
+  mutate(maxAbundance = max(meanAbundance)) %>%
+  select(-meanAbundance) %>%
+  distinct() %>%
+  group_by(taxon_name, OTU) %>%
+  summarise(count = n(), max_Abundance = max(maxAbundance), min_max_Abundance = min(maxAbundance))
+
+write_tsv(lactobacillus_dada2, "lactobacillus_dada2.tsv")
+
+lactobacillus_dada2 %>%
+  select(-OTU)
+```
+
+```{r}
+leuconostoc_dada2 <- dada2_plot_mean_metadata %>%
+  filter(Genus == "Leuconostoc") %>%
+  select(OTU, taxon_name, fermentation, meanAbundance) %>%
+  group_by(taxon_name, fermentation) %>%
+  mutate(maxAbundance = max(meanAbundance)) %>%
+  select(-meanAbundance) %>%
+  distinct() %>%
+  group_by(taxon_name, OTU) %>%
+  summarise(count = n(), max_bundance = max(maxAbundance), min_max_Abundance = min(maxAbundance))
+
+write_tsv(leuconostoc_dada2, "leuconostoc_dada2.tsv")
+
+
+leuconostoc_dada2 %>%
+  select(-OTU)
+```
+
+
+Plot together
+
+```{r}
+enterobacteriaceae_dada2 <- dada2_plot_mean_metadata %>%
+  filter(Family == "Enterobacteriaceae") %>%
+  select(OTU, taxon_name, fermentation, meanAbundance) %>%
+  group_by(taxon_name, fermentation) %>%
+  mutate(maxAbundance = max(meanAbundance)) %>%
+  select(-meanAbundance) %>%
+  distinct() %>%
+  group_by(taxon_name, OTU) %>%
+  summarise(count = n(), maxAbundance = max(maxAbundance), species = "Enterobacteriaceae")
+
+write_tsv(enterobacteriaceae_dada2, "enterobacteriaceae_dada2.tsv")
+
+
+enterobacteriaceae_dada2 %>%
+  select(-OTU)
+```
+
+```{r, fig.width=8, fig.height=8}
+rbind(lactobacillus_dada2, leuconostoc_dada2) %>%
+  mutate(species = str_extract(taxon_name, "[A-z]*")) %>%
+  rbind(enterobacteriaceae_dada2) %>%  
+  mutate(species = factor(species, levels = c("Leuconostoc",
+                                                 "Lactobacillus",
+                                                 "Enterobacteriaceae"))) %>%
+  ggplot(aes(y = reorder(taxon_name, count), x = count)) +
+  geom_point() +
+  facet_wrap(~species, nrow = 3, scales = 'free_y') +
+  theme_bw() + 
+  theme(strip.text = element_text(face = "italic"),
+        axis.text.y = element_text(face = "italic")) +
+  ylab("") + 
+  xlab("Presence in different fermentations \n") 
+```
+
+
+## Beta diversity between samples (Did not end up in the final manuscript)
+
+One main question we have is whether the spontaneous fermentation are different/equal. We will split the fermentations up in their two main actors, mainly, Enterobacteriaceae and Lactobacillaceae/LAB. For this we will use only Day 1, Day 3 and Day30 as they are available in all fermentations.
+
+### Preprocessing the datasets
+
+We need to to the following things to the dataset:
+
+- Merge Biological repeats for CJ1 and CJ2
+- Select Days 01, 03 and 28 for CJ1 and CJ2; select Days 01, 03 and 30 for FP
+- Split dataset in two: Enteros and Lactos
+- Remove samples and OTUs that did not survive these criteria
+
+
+```{r}
+# Merge Biologic repeats CJ1 and CJ2
+grouping_factor <- apply(sample_data(dada2)[,-4], 1, paste0,collapse="_")
+
+psM <- merge_samples(dada2, group=grouping_factor)
+psM.sample_data <- str_split_fixed(rownames(sample_data(psM)), pattern="_", n=4)
+rownames(psM.sample_data) <- rownames(sample_data(psM))
+colnames(psM.sample_data) <- colnames(sample_data(psM))[c(1:3,5)]
+psM.sample_data <- data.frame(psM.sample_data)
+sample_data(psM) <- sample_data(psM.sample_data)
+
+dada2_merged <- psM
+
+# Calculate Relative abundance
+dada2_merged_relabun <- transform_sample_counts(dada2_merged,  function(OTU) OTU/sum(OTU))
+
+daysToSelect<- c("01","03","28","30")
+
+# Split dataset in Enteros and select relevant days
+enteros.dada2_merged_relabun <- dada2_merged_relabun %>%
+  subset_taxa(., Order=="Enterobacteriales") %>%
+  subset_samples(., Day%in%daysToSelect) %>%
+  prune_taxa(taxa_sums(.) > 0, .) %>%
+  prune_samples(sample_sums(.) > 0, .)
+
+# Do same for lactos
+lactos.dada2_merged_relabun <- dada2_merged_relabun %>%
+  subset_taxa(., Order=="Lactobacillales") %>%
+  subset_samples(., Day%in%daysToSelect) %>%
+  prune_taxa(taxa_sums(.) > 0, .) %>%
+  prune_samples(sample_sums(.) > 0, .)
+
+cat("Amount of Enteros: ", ntaxa(enteros.dada2_merged_relabun))
+cat("Amount of Lactos: ", ntaxa(lactos.dada2_merged_relabun))
+```
+
+### PCoA
+
+```{r}
+title <- "PCoA (Bray-Curtis distance) ENTEROS dada2 \n"
+ordination <- ordinate(enteros.dada2_merged_relabun,"PCoA","bray")
+p <- plot_ordination(enteros.dada2_merged_relabun, ordination, color="Day") +
+    geom_line(aes(group = fermentation), color="grey") 
+# Remove layer of points to plot over jitter points
+p$layers <- p$layers[-1]
+p <- p + geom_point(size=3,alpha=0.8) + ggtitle(title)
+p
+```
+
+```{r}
+title <- "PCoA (Bray-Curtis distance) LACTOS dada2 \n"
+ordination <- ordinate(lactos.dada2_merged_relabun,"PCoA","bray")
+p <- plot_ordination(lactos.dada2_merged_relabun, ordination, color="Day") +
+    geom_line(aes(group = fermentation), color="grey") 
+# Remove layer of points to plot over jitter points
+p$layers <- p$layers[-1]
+p <- p + geom_point(size=3,alpha=0.8) + ggtitle(title)
+p
+```
+
+### Plot
+
+Let's calculate the distance matrices and merge them.
+  
+```{r}
+dm_lactos_dada2 <- calculateDistMat(lactos.dada2_merged_relabun) %>%
+  mutate(Order = "Lactobacillales", tool = "dada2")
+dm_enteros_dada2 <- calculateDistMat(enteros.dada2_merged_relabun) %>%
+  mutate(Order = "Enterobacteriales", tool = "dada2")
+
+
+dm_merged <- rbind(dm_lactos_dada2,dm_enteros_dada2)
+```
+
+Start plotting
+
+```{r, fig.width=12, fig.height=8}
+plot <- ggplot(dm_merged)
+plot + geom_density(aes(x=distance, group=Order, colour=Order)) +
+  geom_jitter(aes(x=distance, y=ifelse(Order=="Enterobacteriales",-1,-2), colour=Order),alpha= 0.7, size=0.5) +
+  xlim(0,1.001) +
+  scale_y_continuous(breaks=c(0,1,2)) +
+  facet_grid(day_sample1 ~ tool) +
+  theme_pub() +
+  theme(legend.position = "bottom") 
+```
+
+Alternative plots
+
+```{r, fig.width=12, fig.height=8}
+dm_merged_dada2 <- dm_merged %>% 
+  filter(tool == "dada2")
+  
+dm_merged_transformed <- dm_merged_dada2 %>%
+  group_by(day_sample1, Order) %>%
+  do(data.frame(loc = density(.$distance)$x, dens = density(.$distance)$y))
+
+# Flip and offset densities for the groups
+dm_merged_transformed$dens <- ifelse(dm_merged_transformed$Order == "Enterobacteriales",
+                                      dm_merged_transformed$dens * -1, 
+                                      dm_merged_transformed$dens)
+
+dm_merged_transformed$dens <- ifelse(dm_merged_transformed$day_sample1 == "01",
+                                      dm_merged_transformed$dens, 
+                                      ifelse(dm_merged_transformed$day_sample1 == "03",
+                                             dm_merged_transformed$dens + 5,
+                                             dm_merged_transformed$dens + 10))
+
+# Plot
+plot <- ggplot(dm_merged_transformed, aes(dens, loc, fill = Order, group = interaction(Order, day_sample1)))
+plot  + geom_polygon() + 
+  ylab("Bray-Curtis Distance") +
+  xlab("Day") +
+  scale_x_continuous(breaks = c(0,5,10), labels = c("01","03","30")) + 
+  scale_y_continuous(breaks = c(0, 0.25, 0.50, 0.75, 1)) +
+  theme_pub() + 
+  theme(legend.position = "bottom")
+```
+
+Calculate per timepoint  
+
+```{r}
+dm_enteros_dada2 %>% 
+  group_by(day_sample1) %>%
+  summarise(mean=mean(distance), sd = sd(distance))
+```
+
+```{r}
+dm_lactos_dada2 %>% 
+  group_by(day_sample1) %>%
+  summarise(mean=mean(distance), sd = sd(distance))
+```
