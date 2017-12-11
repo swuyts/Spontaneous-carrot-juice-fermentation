@@ -12,7 +12,7 @@ Sander Wuyts (1,2), Eline F.M. Oerlemans (1), Wannes Van Beeck (1), Stijn Wittou
 
 3 KU Leuven, Campus De Nayer, Laboratory for Process Microbial Ecology and Bioinspirational Management (PME&BIM), Department of Microbial and Molecular Systems (M2S), Fortsesteenweg 30A, B-2860 Sint-Katelijne-Waver, Belgium
 
-* Corresponding author
+(*) Corresponding author
 
 
 Here you can find:
