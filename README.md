@@ -2,7 +2,7 @@
 
 This repository contains all R-markdown files and HTML-files of the submitted manuscript entitled:
 
-**Carrot juice fermentations as man-made microbial ecosystems dominated by lactic acid bacteria**
+[**Carrot juice fermentations as man-made microbial ecosystems dominated by lactic acid bacteria**](http://aem.asm.org/content/early/2018/04/09/AEM.00134-18.abstract)
 
 Sander Wuyts (1,2), Eline F.M. Oerlemans (1), Wannes Van Beeck (1), Stijn Wittouck (1), Ingmar J.J. Claes (1), Ilke De Boeck (1), Stefan Weckx (2), Bart Lievens (3), Luc De Vuyst (2), Sarah Lebeer (1)*
 
