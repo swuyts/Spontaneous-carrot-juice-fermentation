@@ -6,32 +6,39 @@ library(RColorBrewer)
 library(ggtree)
 library(ggpubr)
 
-
-# functions
-
+# Original function by S. Wittouck and adapted by S. Wuyts.
 jplace2tidytrees <- function(jplace, outgroup_tips) {
   
+  # Get the edgeNumber of each node and store them under edge.length
   jplace@phylo$edge.length <- tibble(node = jplace@phylo$edge[, 2]) %>%
     left_join(attr(jplace@phylo, "edgeNum")) %>%
     pull(edgeNum)
   
+  # Identify the MRCA of the outgroup
   outgroup_node <- MRCA(jplace@phylo, tip = outgroup_tips)
   
+  # Reroot the tree baced on this MRCA
   jplace@phylo <- reroot(jplace@phylo, outgroup_node)
   
+  # Initiate new nodes table
   nodes <- tibble()
   
-  for (taxon_index in 1:length(jplace@placements$n)) {
+  for (taxon_index in 1:length(jplace@placements$name)) {
     
-    taxon_name <- jplace@placements$n[[taxon_index]]
+    # Get taxon name of placement
+    taxon_name <- jplace@placements$name[[taxon_index]]
     
-    nodes_new <- as.data.frame(jplace@phylo, branch.length = "none") %>%
-      rename(edge_num = length)
+    # Get ggtree table
+    nodes_new <- ggtree(jplace@phylo, branch.length = "none") %>%
+      .$data %>%
+      rename(edge_num = branch.length) # Retrieve the edgeNumber that we stored in the branched length above
     
-    placements <- jplace@placements$p[[taxon_index]] %>%
-      as_tibble() %>%
-      set_names(jplace@fields)
-    
+    # Get the placements in a table
+    placements <- jplace@placements %>%
+      as_tibble %>%
+      filter(name == taxon_name) %>%
+      select(-node)
+
     nodes_new <- left_join(nodes_new, placements) %>%
       mutate(placement = ifelse(is.na(like_weight_ratio), "no", "yes")) %>%
       mutate(asv = !! taxon_name)
